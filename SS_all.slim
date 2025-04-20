@@ -1,0 +1,148 @@
+
+initialize() {
+	
+	initializeTreeSeq();
+	
+	//defineConstant('burnin_number', 19);
+	//defineConstant('population_size', 10000);
+	//defineConstant("seed", 253282376);
+	//defineConstant("seed_id", 1);
+	defineConstant('haplotype_length', 70000);
+	
+	//defineConstant('recomb_rate', 0.0000025);
+	//defineConstant('mut_rate', 0.0000025);
+	
+	initializeRecombinationRate(recomb_rate);
+	initializeMutationRate(mut_rate);
+	
+	initializeMutationType('m0', 0.5, 'f', 0.0); // neutral mutation
+	initializeMutationType('m2', 0.5, 'f', 0.0); // to be beneficial mutation
+	
+	m0.mutationStackPolicy = 'l';
+	m2.mutationStackPolicy = 'l';
+	
+	initializeGenomicElementType('g1', m0, 1.0);
+	initializeGenomicElementType('g2', m2, 1.0);
+	
+	// g1 only has neutral mutations
+	// g2 (sweep site) only has the to-be beneficial mutation
+	initializeGenomicElement(g1, 0, 34999);
+	initializeGenomicElement(g2, 35000, 35000);
+	initializeGenomicElement(g1, 35001, 70000);
+	
+	setSeed(seed);
+	
+	defineGlobal('next_target_allele_frequency', 0.5);
+}
+
+// function for naming files and creating directories
+function(string) get_filename(string directory, string allele_frequency, string extension) {
+	if (directory != "" & !fileExists(directory)) {
+		subdirectories = strsplit(directory, "/");
+		createdSoFar = "";
+		for (subdirectory in subdirectories) {
+			createdSoFar = createdSoFar + subdirectory + "/";
+			if (!fileExists(createdSoFar)) {
+				createDirectory(createdSoFar);
+			}
+		}
+	}
+	return directory + "/" + asString(seed_id) + "_" + asString(burnin_number) + "_" + asString(population_size) + "_" + asString(mut_rate) + "_" + asString(recomb_rate) + "_" + asString(allele_frequency) + extension;
+}
+
+
+
+// load in the burn in
+// tag will be used to track number of beneficial mutations
+1 late () {
+	sim.readFromPopulationFile('tree_files/burnin_no.' + asString(burnin_number) + '_complete.trees');
+	p0.tag = sim.countOfMutationsOfType(m2);
+	cat(p0.tag);
+	log = community.createLogFile(get_filename(asString(seed_id) + "/LOG", "LOG", ".csv"));
+	log.addCycle();
+	log.addCustomColumn("Allele Frequency", "sum(sim.mutationFrequencies(p0, sim.mutationsOfType(m2)));");
+	log.addCustomColumn("Lineages", "p0.tag;");
+	defineConstant("LOG", log);
+}
+
+// function for sampling 
+function(void) sample_vcf(integer sample_size)
+{
+	sample = p0.sampleIndividuals(sample_size);
+	sample_genomes = sample.genomes;
+	sample_index = sample.index;
+	cat(asString(sample_size) + " Individual IDs sampled:\n");
+	print(sample_index);
+	writeFile(get_filename(asString(seed_id) + "/sample_ID/" + asString(next_target_allele_frequency) + "/" + asString(sample_size), asString(next_target_allele_frequency), "_" + asString(sample_size) + ".txt"), asString(sample_index));
+	sample_genomes.outputVCF(get_filename(asString(seed_id) + "/VCF/" + asString(next_target_allele_frequency) + "/" + asString(sample_size), asString(next_target_allele_frequency), "_" + asString(sample_size) + ".vcf"));
+}
+
+
+2:1000000000 late () {
+	// every new m2 mutation is now beneficial 
+	sweep = sim.mutationsOfType(m2);
+	sweep.setSelectionCoeff(0.05);
+	
+	
+	if (p0.tag != sim.countOfMutationsOfType(m2))
+	{
+		LOG.logRow();
+		// if m2 freq = 1.0 --> hard sweep 
+		if (any(sim.substitutions.mutationType == m2)) // and p0.tag == 1
+		{
+			cat("Hard sweep ended in cycle " + sim.cycle + "\n");
+			sim.simulationFinished();
+		}
+		// if not, re-new the tag count, keep track of lineages
+		else
+		{
+			p0.tag = sim.countOfMutationsOfType(m2);
+			cat("Cycle " + sim.cycle + ": " + p0.tag + " lineage(s)\n");
+			
+			// Sweep failed if there are no m2 mutations (genetic drift)
+			if ((p0.tag == 0) & (sim.cycle > 10000000))
+			{
+				cat("Sweep failed to establish.\n");
+				sim.simulationFinished();
+			}
+		}
+	}
+	
+	// 
+	allele_frequency = sum(sim.mutationFrequencies(p0, sim.mutationsOfType(m2)));
+	if (allele_frequency >= next_target_allele_frequency)
+	{
+		cat("Soft sweep ended in cycle " + sim.cycle + "\n");
+		if (allele_frequency >= 0.7) {
+			LOG.logRow();
+			sim.simulationFinished();
+		}
+		cat("Frequencies:\n");
+		print(sim.mutationFrequencies(p0, sim.mutationsOfType(m2)));
+		
+		// sample for vcf output
+		
+		// 10 samples
+		sample_vcf(10);
+		
+		// 100 samples for N = 1000 and 10000
+		if (population_size >= 1000)
+		{
+			sample_vcf(100);
+		}
+		
+		// 1000 samples for N = 10000
+		if (population_size == 10000)
+		{
+			sample_vcf(1000);
+		}
+		
+		// output .trees file
+		sim.treeSeqOutput(get_filename(asString(seed_id) + "/TREES", asString(next_target_allele_frequency), ".trees"));
+		
+		if (allele_frequency >= 0.5) {
+			defineGlobal('next_target_allele_frequency', 0.7);
+		}
+	}
+}
+

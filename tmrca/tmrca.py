@@ -1,0 +1,441 @@
+# Import modules
+import numpy as np
+import zarr
+import allel
+import scipy.cluster.hierarchy as sch
+import matplotlib
+import matplotlib.pyplot as plt
+import scipy.signal
+from scipy.ndimage import gaussian_filter1d
+import dask
+from dask.base import compute
+from itertools import combinations
+import seaborn as sns
+# import tskit
+import pandas as pd
+# meowcha added this below
+from scipy.cluster.hierarchy import fcluster
+from collections import Counter, defaultdict
+import csv
+import sys, os
+import traceback
+
+
+# These are the same for everything
+global genome_length
+genome_length = 70001
+global mutation
+mutation = int((genome_length+1)/2)
+
+
+global threshold
+threshold = 0.87  # setting threshold to calculate trough points in each haplotype
+global points
+points=280 # smoothing 
+global window
+window=600 # sliding window for homozygosity 
+
+# These are different for every vcf file
+try:
+    filename = sys.argv[1]
+    threshold = float(sys.argv[2])
+    points = int(sys.argv[3])
+    window = int(sys.argv[4])
+except IndexError:
+    print("Usage: python3 tmrca.py <vcz_filename> <threshold> <points> <window>")
+    exit()
+
+basename = os.path.basename(filename).strip()[:-4] # removes the .vcz extension from filename
+basename_components = basename.split('_')
+basename += f'_{threshold}_{points}_{window}'
+global seed_index
+seed_index = int(basename_components[0])
+global population_size
+population_size = int(basename_components[2])
+global mutation_rate
+mutation_rate = float(basename_components[3])
+global recombination_rate
+recombination_rate = float(basename_components[4])
+global frequency
+frequency = float(basename_components[5])
+global sample_size
+sample_size = int(basename_components[6])
+global no_haplotypes
+no_haplotypes = sample_size*2
+
+print("population_size", population_size)
+print("mutation_rate", mutation_rate)
+print("recombination_rate", recombination_rate)
+print("sample_size", sample_size)
+
+
+#prev student: Like Hamming distance code, this was also taken from Anushka Thawani. Adaptations were made to this on the 
+#high-performance computer using shell script, but this could not be represented.
+
+def convert(file):
+    '''
+    This function extracts haplotypes sequences from a .vcz file 
+    Adapted from: http://alimanfoo.github.io/2018/04/09/selecting-variants.html 
+    
+    Arguments:
+        file: name of vcz file (converted from vcf from SLiM soft sweep simulation)
+        
+    Returns:
+        ht: haplotype sequences for 200 individuals
+        samp_freq: frequency of sweep mutation in sample
+        cols: used to color dendrogram
+        pos: position of variants 
+
+    '''
+    print("path is", file)
+
+    # Open as a Dataset
+    data = zarr.open_group(file, mode='r')
+    # Stores the ID and genomic position of each variant 
+    pos = allel.SortedIndex(data['variant_position'])             
+    
+    # Extract genotypes for all individuals and convert to haplotypes (sample size x 2)
+    gt = data['call_genotype'][:,0:sample_size*2] 
+    ht = allel.GenotypeArray(gt).to_haplotypes()    
+    
+    # Output the frequency of the sweep mutation in the sample
+    contains_sweep = pos.locate_range(mutation,mutation) #finds index of sweep mutation in the array
+    sweep = ht[contains_sweep]                           # saves the haplotypes containing the sweep in the variable sweep
+    sweep = np.sum(sweep, axis =0)                       #sums up mutation occurences in each haplotypes
+    
+    samp_freq = np.sum(sweep)/sample_size*2  # finds freq in the entire sample
+    
+
+    # This dictionary is used later to color the dendrogram branches according to whether or not the 
+    # corresponding sequence contains the sweep mutation
+    cols = {}
+    for i in range(sample_size*2):
+        if sweep[i]:
+            cols[i] = "#FF0000" # red 
+        else:
+            cols[i] = "#808080" # grey 
+    
+    return ht, pos, samp_freq, cols, sweep
+
+def sliding_homozygosity(ht, pos, gts):
+    '''
+    This function calculates the sliding homozygosity for all pairs of haplotypes.
+
+    Arguments:
+    gts : number of haplotype pairs
+    ht : vector of haplotype sequences from convert() function in previous codeblock
+    pos: position of variants from convert() function in previous codeblock
+
+    Returns:
+    homozygosities:  homozygosity of all haplotypes in ht in a array(?)
+    '''
+    # Initialise empty vector 
+    hom = np.empty(shape=(genome_length,gts),dtype=np.float32)  
+
+    reg =  slice(-100, -100, None)
+    
+    
+    for x in range(0,genome_length):
+        start  = x
+        end = x + window
+        try:    
+            region = pos.locate_range(start,end)  
+            # Check if the current window (region) is different from the previous window (reg) - makes code faster
+            if region != reg:
+                htx = ht[region]
+                d = allel.pairwise_distance(htx, metric="hamming")
+                hom[x,:] = 1-d  # 1-hamming distance = homozygosity
+                reg = region
+    
+            else:
+                hom[x,:] = 1-d
+
+        except KeyError:
+            pass
+    
+    return hom
+
+def finding_troughs(smooth, mutation_position):
+    '''
+    This function finds troughs for a pair of haplotype sequences.
+
+    Arguments:
+        smooth: smoothed sliding window homozygosity for all pairs of sequences
+        mutation_position: position of sweep mutation in genome (same as previous function)
+
+    Returns:
+        lower: position of breakpoint left of the sweep site
+        upper: position of breakpoint right of the sweep site
+        SHL: shared haplotype length
+    '''
+
+    #finding troughs
+    try:
+        troughs, _ = scipy.signal.find_peaks(-smooth) # - sign inverts the graph so the 'peaks' are our troughs
+        troughs = troughs[smooth[troughs] < threshold]   # Extract troughs where homozygosity<threshold
+    except IndexError as e:
+        print("Index error in finding_troughs when extracting troughs", mutation_position)
+        raise e
+
+    #finds the peaks
+    try:
+        peaks, _ = scipy.signal.find_peaks(smooth)
+    except IndexError as e:
+        print("Index error in finding_troughs when finding peaks", mutation_position)
+        raise e
+
+    # Find positions of troughs flanking sweep site
+    try:
+        bp = np.searchsorted(troughs,mutation_position)  #search sorted finds index of position where mutation should be inserted in order to maintain the same order
+        lower = troughs[bp - 1] #index of sweep site -1
+        upper = troughs[bp]  #index of sweep site
+    except IndexError as e:
+        print("Index error in finding_troughs when finding positions of troughs flanking sweep site", mutation_position)
+        raise e
+
+    # Find the average peak position around the sweep site
+    try:
+        highest = peaks[(peaks >= lower) & (peaks <= upper)]
+        if highest.size != 0:
+            highest = np.mean(highest)
+        else:
+            highest = (lower+upper)/2
+    except IndexError as e:
+        print("Index error in finding_troughs when finding avg peak position", mutation_position)
+        raise e
+
+    # this is defining SHL based on middle of trough and peak 
+    # aren't we supposed to use 1/2 of the homozygosity of the peak?
+    lower = (lower+highest)/2 
+    upper = (upper+highest)/2
+
+    SHL = upper - lower
+
+    return int(lower), int(upper), SHL
+
+
+## function using each haplotype pair to return SHL and find lower and upper limits of SHL
+# uses finding_troughs()
+def find_breakpoint(haplotype_pair):
+    '''
+    For a pair of sequences, this function smoothes the sliding homozygosity and returns the SHL
+    Arguments:haplotype_pair
+        haplotype_pair: a pair of haplotype sequences
+        
+    Returns:
+        lower: position of breakpoint left of the sweep site
+        upper: position of breakpoint right of the sweep site
+        SHL: shared haplotype length
+    '''
+    
+    mutation_pos = mutation 
+    smooth = gaussian_filter1d(haplotype_pair, points)
+    try:
+        lower, upper, SHL = finding_troughs(smooth, mutation_pos)
+    except IndexError:
+        print("Index error in find_breakpoint!!", traceback.format_exc())
+        lower = -1.3
+        upper = -1.3
+        SHL = -1.3
+        
+    return lower, upper, SHL
+
+# Calculating Kij (No. of SNPs in each SHL)
+def find_snp(n,gts,ht,results_computed_1,pos):
+    '''
+    This function finds the number of SNPs over the shared haplotype length for all pairs of haplotype sequences
+    
+    Arguments:
+        n: number of haplotype sequences
+        gts: number of haplotype pairs
+        ht: haplotype sequnces
+        results_computed_1: output from find_breakpoint function
+        pos: position of variants from convert() function 
+        
+    Returns:
+        diffs: number of SNP differences for all pairs of haplotype sequences
+        
+    '''
+    pairwise = []
+    for combo in combinations(list(range(0,n)), 2): 
+        pairwise.append(combo)
+
+    diffs = np.empty(shape=(gts),dtype=np.float32)
+    for i in range(gts):
+        pair = ht[:,pairwise[i]]
+        try:
+            start = results_computed_1[i,1]
+            stop = results_computed_1[i,2]
+
+            window_pos = pos.locate_range(start, stop)
+            window = pair[window_pos]
+
+            d = allel.pairwise_distance(window, metric = "hamming")
+
+            diffs[i]=d 
+
+        except KeyError:
+            diffs[i]=0 # set it to 0 bcs having a lot of negative values broke stuff
+            print("key error in find_snp", traceback.format_exc())
+    return diffs
+
+
+#Calculating Tij, Time to Common Ancestor (TMRCA) using mutation rate and number of SNPs
+# 𝜏_𝑖𝑗=(𝑘_𝑖𝑗+1)/(2ℓ_𝑖𝑗 (𝑟+𝜇))
+#for array number x:
+    #read in vcf file
+    # read in population size, mu, r from population parameters csv file
+
+
+def calculating_Tij():
+    '''
+    This function calculates Tij, Time to Common Ancestor (TMRCA) using mutation rate and number of SNPs for each haplotype pair.
+    It uses the convert() to convert files from vcf 
+    It uses the sliding_heterozygosity() to calculate heterozygosity in the window for all pairs of haplotypes
+
+    
+    Arguments:
+        array_index: array index or combination number of simulation
+        seed: seed number of simulation
+        
+        genome_length: length of genome (in SLiM simulation)          
+        ht : haplotypes (what variable structure?)
+
+        window: length of sliding window
+        threshold: threshold above which troughs are ignored
+        points: number of points to use for 1D-gaussian filter (see scipy documentation)
+        
+    Returns:
+        Tij: Time to most recent Common Ancestor (TMRCA)
+        cols: used to color dendrogram
+  
+    '''    
+
+    # read in population size, mu, r from population parameters csv
+
+    # Extract haplotype sequences from .vcf file
+    ht, pos, samp_freq, cols, sweep = convert(filename)
+
+    # Calculate sliding homozygosity for all pairs of haplotype sequences
+    gts = int((no_haplotypes*(no_haplotypes-1))/2)
+    homozygosities = sliding_homozygosity(ht, pos, gts)
+
+    print("homozygosities:", homozygosities, "len", len(homozygosities))
+
+    
+    # Find SHL for all pairs of haplotype sequences 
+    hom_dask = dask.array.from_array(homozygosities, chunks=(genome_length, 1)) # type: ignore # creates a dask array
+    homozygosities = []
+    results = dask.array.apply_along_axis(find_breakpoint, 0, hom_dask) # type: ignore #applies find_breakpoint() along the array
+    results_computed = results.compute()
+
+    # Manipulating the dataframe to make it easier to process
+    results_computed = np.transpose(results_computed)
+    index = np.asarray(range(0,gts))
+    index = np.expand_dims(index, axis=0)
+    results_computed_1 = np.concatenate((index.T, results_computed), axis=1)
+    
+    
+    # Calculate the TMRCA from the SHLs and number of SNPs
+    shls = results_computed_1[:,3]   # SHLs for all pairs of haplotype sequences 
+    shls[shls<=0] = genome_length
+    diffs = find_snp(no_haplotypes, gts, ht, results_computed_1, pos)
+    Tij = (1+(diffs*shls))/(2*shls*(recombination_rate + mutation_rate)) # TMRCA metric for all pairs of haplotype sequences 
+
+    
+    # Remove negative and non-integer TMRCA values
+    impute = np.nanmean(Tij)        #impute is the mean of SNP array without any NAN values
+    print("impute", impute)
+    x = np.isfinite(Tij)            #x is a boolean mask array of only finite values (cannot be infinite or NAN)
+    for i in np.where(x == 0)[0]:   #for all indices where there is a non-finite number:
+        Tij[i] = impute             #replace NaN with inpute value
+    Tij[Tij<=0] = impute            # replace all negative numbers wih inpute
+
+    return Tij, cols
+
+
+def analysis(): 
+
+    '''
+    This function plots a dendrogram and colours red the tips that have the sweep mutations. 
+    It uses calculating_Tij().
+    Only the output vcf from the SLIM simulation is input.
+    global variables genome_length, window, threshold, points being used
+
+    Arguments:
+    
+    global variables/ variables from sub functions:
+    window: length of sliding window
+    threshold: threshold above which troughs are ignored
+    points: number of points to use for 1D-gaussian filter (see scipy documentation)
+    cols: colours haplotype branches red if they have sweep mutation. From convert().
+
+
+
+    Returns:
+    output dendrogram in pdf
+    '''
+    #all convert(), etc etc to end up with tij
+    Tij, cols = calculating_Tij()
+    
+    # Hierachical Clustering, store in Z
+    Z = sch.linkage(Tij, method = 'average') #why do we use the Farthest Point Algorithm? changed to average (UPGMA) , check after
+
+    ## Plot dendrogram without colouring branches
+    # updating matplotlib font settings
+    matplotlib.rcParams.update({'font.size': 24})
+    fig = plt.figure(figsize=(30, 12))
+    gs = matplotlib.gridspec.GridSpec(2, 1, hspace=0.1, wspace=1, height_ratios=(1,1)) # type: ignore
+
+    ax_dend = fig.add_subplot(gs[0, 0])
+    sns.despine(ax=ax_dend, offset=5, bottom=True, top=True)
+    dd = sch.dendrogram(Z,color_threshold=0,above_threshold_color='#808080',ax=ax_dend) # if above colour threshold, set colour to grey 
+
+    ls = []
+    for leaf, leaf_color in zip(plt.gca().get_xticklabels(), dd["leaves_color_list"]):   #leaves_color_list is A list of color names. The k’th element represents the color of the k’th leaf.
+        leaf.set_color(cols[int(leaf.get_text())])
+        ls.append(int(leaf.get_text()))
+
+    ax_dend.set_ylabel('Haplotype age/generations',fontsize=24)
+    ax_dend.set_title('Haplotype clusters',fontsize=24)
+
+
+
+    # Plot dendrogram and colour branches
+    ax_dend_2 = fig.add_subplot(gs[1, 0])
+    
+    dflt_col = "#808080"
+    
+    link_cols = {}
+    for i, i12 in enumerate(Z[:,:2].astype(int)):
+        c1, c2 = (link_cols[x] if x > len(Z) else cols[x] for x in i12)
+        link_cols[i+1+len(Z)] = c1 if c1 == c2 else dflt_col
+
+    sns.despine(ax=ax_dend_2, offset=5, bottom=True, top=True)
+    dd = sch.dendrogram(Z,link_color_func=lambda x: link_cols[x], ax=ax_dend_2)
+
+    ls = []
+    for leaf, leaf_color in zip(plt.gca().get_xticklabels(), dd["leaves_color_list"]):
+        leaf.set_color(cols[int(leaf.get_text())])
+        ls.append(int(leaf.get_text()))
+
+    ax_dend_2.set_ylabel('Haplotype age/generations',fontsize=24)
+    
+    
+    # Save dendrogram
+    output_directory = f'{seed_index}/TMRCA/{frequency}/{sample_size}' 
+    if not os.path.exists(output_directory):
+        os.makedirs(output_directory)
+
+    pdf_output = f'{output_directory}/{basename}.pdf'
+    Z_output = f'{output_directory}/{basename}_Z.npy'
+    cols_output = f'{output_directory}/{basename}_cols.npy'
+    print (pdf_output)
+    print(Z_output)
+    print(cols_output)
+    plt.savefig(pdf_output)
+    np.save(Z_output, Z)
+    np.save(cols_output, cols)
+    
+
+analysis()
