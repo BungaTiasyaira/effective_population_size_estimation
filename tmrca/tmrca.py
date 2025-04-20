@@ -187,27 +187,50 @@ def finding_troughs(smooth, mutation_position):
     # Find positions of troughs flanking sweep site
     try:
         bp = np.searchsorted(troughs,mutation_position)  #search sorted finds index of position where mutation should be inserted in order to maintain the same order
-        lower = troughs[bp - 1] #index of sweep site -1
-        upper = troughs[bp]  #index of sweep site
+        lower_trough = troughs[bp - 1] #index of sweep site -1
+        upper_trough = troughs[bp]  #index of sweep site
     except IndexError as e:
         print("Index error in finding_troughs when finding positions of troughs flanking sweep site", mutation_position)
         raise e
 
     # Find the average peak position around the sweep site
     try:
-        highest = peaks[(peaks >= lower) & (peaks <= upper)]
+        highest = peaks[(peaks >= lower_trough) & (peaks <= upper_trough)]
         if highest.size != 0:
             highest = np.mean(highest)
         else:
-            highest = (lower+upper)/2
+            highest = (lower_trough+upper_trough)/2
     except IndexError as e:
-        print("Index error in finding_troughs when finding avg peak position", mutation_position)
+        print("Index error in finding_troughs when finding avg peak position")
         raise e
 
-    # this is defining SHL based on middle of trough and peak 
-    # aren't we supposed to use 1/2 of the homozygosity of the peak?
-    lower = (lower+highest)/2 
-    upper = (upper+highest)/2
+    # Get homozygosity for the highest peak, get whats half of it too
+    highest_homozygosity = smooth[highest]
+    half_homozygosity = highest_homozygosity / 2
+
+    # LEFT SIDE — getting boundaries on lower_trough side
+    try:
+        left_seg = smooth[lower_trough:highest+1]
+        left_idx = np.where((left_seg[:-1] < half_homozygosity) & (left_seg[1:] >= half_homozygosity))[0]
+        if left_idx.size > 0:
+            lower = lower_trough + left_idx[0]
+        else:
+            lower = lower_trough + np.argmin(np.abs(left_seg - half_homozygosity))
+    except IndexError as e:
+        print("IndexError in LEFT SHL boundary", traceback.format_exc())
+        raise e
+
+    # RIGHT SIDE — getting boundaries on upper_trough side
+    try:
+        right_seg = smooth[highest:upper_trough+1]
+        right_idx = np.where((right_seg[:-1] >= half_homozygosity) & (right_seg[1:] < half_homozygosity))[0]
+        if right_idx.size > 0:
+            upper = highest + right_idx[0] + 1
+        else:
+            upper = highest + np.argmin(np.abs(right_seg - half_homozygosity))
+    except IndexError as e:
+        print("IndexError in RIGHT SHL boundary", traceback.format_exc())
+        raise e
 
     SHL = upper - lower
 
@@ -340,7 +363,7 @@ def calculating_Tij():
     shls = results_computed_1[:,3]   # SHLs for all pairs of haplotype sequences 
     shls[shls<=0] = genome_length
     diffs = find_snp(no_haplotypes, gts, ht, results_computed_1, pos)
-    Tij = (1+(diffs*shls))/(2*shls*(recombination_rate + mutation_rate)) # TMRCA metric for all pairs of haplotype sequences 
+    Tij = (1+diffs)/(2*shls*(recombination_rate + mutation_rate)) # TMRCA metric for all pairs of haplotype sequences 
 
     
     # Remove negative and non-integer TMRCA values
@@ -427,9 +450,9 @@ def analysis():
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
 
-    pdf_output = f'{output_directory}/{basename}.pdf'
-    Z_output = f'{output_directory}/{basename}_Z.npy'
-    cols_output = f'{output_directory}/{basename}_cols.npy'
+    pdf_output = f'{output_directory}/{basename}_update1.pdf'
+    Z_output = f'{output_directory}/{basename}_update1_Z.npy'
+    cols_output = f'{output_directory}/{basename}_update1_cols.npy'
     print (pdf_output)
     print(Z_output)
     print(cols_output)
