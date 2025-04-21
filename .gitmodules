@@ -1,0 +1,3 @@
+[submodule "phasedibd"]
+	path = phasedibd
+	url = https://github.com/23andMe/phasedibd.git

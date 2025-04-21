@@ -204,13 +204,20 @@ def finding_troughs(smooth, mutation_position):
         print("Index error in finding_troughs when finding avg peak position")
         raise e
 
+    highest_float = highest
+    highest = int(highest)
+
     # Get homozygosity for the highest peak, get whats half of it too
+    with np.printoptions(threshold=np.inf):
+        print(smooth)
     highest_homozygosity = smooth[highest]
     half_homozygosity = highest_homozygosity / 2
 
     # LEFT SIDE — getting boundaries on lower_trough side
     try:
         left_seg = smooth[lower_trough:highest+1]
+        if left_seg.size == 0: # ensure we don't attempt to find argmin of an empty sequence
+            return 0, 0, 0
         left_idx = np.where((left_seg[:-1] < half_homozygosity) & (left_seg[1:] >= half_homozygosity))[0]
         if left_idx.size > 0:
             lower = lower_trough + left_idx[0]
@@ -223,6 +230,8 @@ def finding_troughs(smooth, mutation_position):
     # RIGHT SIDE — getting boundaries on upper_trough side
     try:
         right_seg = smooth[highest:upper_trough+1]
+        if right_seg.size == 0:
+            return 0, 0, 0
         right_idx = np.where((right_seg[:-1] >= half_homozygosity) & (right_seg[1:] < half_homozygosity))[0]
         if right_idx.size > 0:
             upper = highest + right_idx[0] + 1
@@ -233,6 +242,11 @@ def finding_troughs(smooth, mutation_position):
         raise e
 
     SHL = upper - lower
+    print("Lower", lower, "Upper", upper, "SHL", SHL,
+        "Highest", highest_float,
+        "Old lower", (lower_trough+highest_float)/2,
+        "Old upper", (upper_trough+highest_float)/2,
+        "Old SHL", (upper_trough+highest_float)/2 - (lower_trough+highest_float)/2 )
 
     return int(lower), int(upper), SHL
 
