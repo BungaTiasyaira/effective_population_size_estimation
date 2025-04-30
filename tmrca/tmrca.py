@@ -8,8 +8,10 @@ import matplotlib.pyplot as plt
 import scipy.signal
 from scipy.ndimage import gaussian_filter1d
 import dask
+import dask.bag as db
 from dask.base import compute
 from itertools import combinations
+from functools import partial
 import seaborn as sns
 # import tskit
 import pandas as pd
@@ -69,43 +71,7 @@ def convert(file, sample_size, mutation_position):
     
     return ht, pos, samp_freq, cols, sweep
 
-def sliding_homozygosity(ht, pos, gts, genome_length, window):
-    '''
-    This function calculates the sliding homozygosity for all pairs of haplotypes.
 
-    Arguments:
-    gts : number of haplotype pairs
-    ht : vector of haplotype sequences from convert() function in previous codeblock
-    pos: position of variants from convert() function in previous codeblock
-
-    Returns:
-    homozygosities:  homozygosity of all haplotypes in ht in a array(?)
-    '''
-    # Initialise empty vector 
-    hom = np.empty(shape=(genome_length,gts),dtype=np.float32)  
-
-    reg =  slice(-100, -100, None)
-    
-    
-    for x in range(0,genome_length):
-        start  = x
-        end = x + window
-        try:    
-            region = pos.locate_range(start,end)  
-            # Check if the current window (region) is different from the previous window (reg) - makes code faster
-            if region != reg:
-                htx = ht[region]
-                d = allel.pairwise_distance(htx, metric="hamming")
-                hom[x,:] = 1-d  # 1-hamming distance = homozygosity
-                reg = region
-    
-            else:
-                hom[x,:] = 1-d
-
-        except KeyError:
-            pass
-    
-    return hom
 
 def sliding_homozygosity_single(ht, pos, hap1_idx, hap2_idx, genome_length, window):
     '''
@@ -164,7 +130,7 @@ def sliding_homozygosity_single_slice(bp_start, bp_end, hom, ht, pos, hap1_idx, 
         hom: 1D array of homozygosity values
     '''
     reg = slice(-100, -100, None)
-    print(f'calculating homozygosity for [{bp_start}, {bp_end})')
+    # print(f'calculating homozygosity for [{bp_start}, {bp_end}]')
 
     for x in range(bp_start, bp_end):
         start = x
@@ -189,130 +155,6 @@ def sliding_homozygosity_single_slice(bp_start, bp_end, hom, ht, pos, hap1_idx, 
     return hom
 
 
-def finding_troughs(smooth, mutation_position, threshold):
-    '''
-    This function finds troughs for a pair of haplotype sequences.
-
-    Arguments:
-        smooth: smoothed sliding window homozygosity for all pairs of sequences
-        mutation_position: position of sweep mutation in genome (same as previous function)
-
-    Returns:
-        lower: position of breakpoint left of the sweep site
-        upper: position of breakpoint right of the sweep site
-        SHL: shared haplotype length
-    '''
-
-    #finding troughs
-    try:
-        troughs, _ = scipy.signal.find_peaks(-smooth) # - sign inverts the graph so the 'peaks' are our troughs
-        troughs = troughs[smooth[troughs] < threshold]   # Extract troughs where homozygosity<threshold
-    except IndexError as e:
-        print("Index error in finding_troughs when extracting troughs", mutation_position)
-        raise e
-
-    #finds the peaks
-    try:
-        peaks, _ = scipy.signal.find_peaks(smooth)
-    except IndexError as e:
-        print("Index error in finding_troughs when finding peaks", mutation_position)
-        raise e
-
-    # Find positions of troughs flanking sweep site
-    bp = np.searchsorted(troughs,mutation_position)  #search sorted finds index of position where mutation should be inserted in order to maintain the same order
-    try:
-        lower_trough = troughs[bp - 1] #index of sweep site -1
-    except IndexError:
-        print("Cannot find a trough on the left lower than threshold", threshold, "Setting lower_trough to 0")
-        lower_trough = 0
-    try:
-        upper_trough = troughs[bp]  #index of sweep site
-    except IndexError:
-        print("Cannot find a trough on the right lower than threshold", threshold, "Setting upper_trough to", smooth.size - 1)
-        upper_trough = smooth.size - 1
-
-    # Find the average peak position around the sweep site
-    try:
-        highest = peaks[(peaks >= lower_trough) & (peaks <= upper_trough)]
-        if highest.size != 0:
-            highest = np.mean(highest)
-        else:
-            highest = (lower_trough+upper_trough)/2
-    except IndexError as e:
-        print("Index error in finding_troughs when finding avg peak position")
-        raise e
-
-    highest_float = highest
-    highest = int(highest)
-
-    # Get homozygosity for the highest peak, get whats half of it too
-    # with np.printoptions(threshold=np.inf):
-    #     print("smooth", smooth[0:10])
-    highest_homozygosity = smooth[highest]
-    half_homozygosity = highest_homozygosity / 2
-
-    # LEFT SIDE — getting boundaries on lower_trough side
-    try:
-        left_seg = smooth[lower_trough:highest+1]
-        if left_seg.size == 0: # ensure we don't attempt to find argmin of an empty sequence
-            return 0, 0, 0
-        left_idx = np.where((left_seg[:-1] < half_homozygosity) & (left_seg[1:] >= half_homozygosity))[0]
-        if left_idx.size > 0:
-            lower = lower_trough + left_idx[0]
-        else:
-            lower = lower_trough + np.argmin(np.abs(left_seg - half_homozygosity))
-    except IndexError as e:
-        print("IndexError in LEFT SHL boundary", traceback.format_exc())
-        raise e
-
-    # RIGHT SIDE — getting boundaries on upper_trough side
-    try:
-        right_seg = smooth[highest:upper_trough+1]
-        if right_seg.size == 0:
-            return 0, 0, 0
-        right_idx = np.where((right_seg[:-1] >= half_homozygosity) & (right_seg[1:] < half_homozygosity))[0]
-        if right_idx.size > 0:
-            upper = highest + right_idx[0] + 1
-        else:
-            upper = highest + np.argmin(np.abs(right_seg - half_homozygosity))
-    except IndexError as e:
-        print("IndexError in RIGHT SHL boundary", traceback.format_exc())
-        raise e
-
-    SHL = upper - lower
-    print("Lower", lower, "Upper", upper, "SHL", SHL,
-        "Highest", highest_float,
-        "Old lower", (lower_trough+highest_float)/2,
-        "Old upper", (upper_trough+highest_float)/2,
-        "Old SHL", (upper_trough+highest_float)/2 - (lower_trough+highest_float)/2 )
-
-    return int(lower), int(upper), SHL
-
-
-## function using each haplotype pair to return SHL and find lower and upper limits of SHL
-# uses finding_troughs()
-def find_breakpoint(haplotype_pair, mutation_position, points, threshold):
-    '''
-    For a pair of sequences, this function smoothes the sliding homozygosity and returns the SHL
-    Arguments:haplotype_pair
-        haplotype_pair: a pair of haplotype sequences
-        
-    Returns:
-        lower: position of breakpoint left of the sweep site
-        upper: position of breakpoint right of the sweep site
-        SHL: shared haplotype length
-    '''
-    
-    smooth = gaussian_filter1d(haplotype_pair, points)
-    try:
-        lower, upper, SHL = finding_troughs(smooth, mutation_position, threshold)
-    except IndexError:
-        print("Index error in find_breakpoint!!", traceback.format_exc())
-        lower = -1.3
-        upper = -1.3
-        SHL = -1.3
-        
-    return lower, upper, SHL, smooth
 
 def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length, mutation_position, points, threshold, window, check_interval):
     '''
@@ -349,46 +191,57 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
                                       hap2_idx, window)
 
     lower_trough = 0
-    upper_trough = genome_length
+    upper_trough = genome_length - 1
+
+    def handle_smooth_part(homozygosities_to_scan, min_smooth):
+        smooth_part = scipy.signal.convolve(homozygosities_to_scan,
+                                            gaussian_kernel, mode='valid')
+
+        smooth_homozygosities[min_smooth:min_smooth+smooth_part.size] = smooth_part
     
+        troughs, _ = scipy.signal.find_peaks(-smooth_part) # invert sign to find troughs
+        troughs = troughs[smooth_part[troughs] < threshold] # only allow troughs below threshold
+        troughs = [min_smooth + trough for trough in troughs] # map values in troughs to BP
+
+        return troughs
+
     # Find closest left trough by checking homozygosity for check_interval bps at a time.
-    while min_discovered >= 0:
+    while min_discovered > 0:
         next_min_discovered = max(0, min_discovered - check_interval)
         sliding_homozygosity_single_slice(next_min_discovered, min_discovered,
                                       homozygosities, ht, pos, hap1_idx,
                                       hap2_idx, window)
-        smooth_part = scipy.signal.convolve(homozygosities[next_min_discovered:min_discovered+blur_window_size],
-                                            gaussian_kernel, mode='valid')
 
-        min_smooth = next_min_discovered + blur_radius # index of the smallest value that has been smoothed out
-        smooth_homozygosities[min_smooth:min_smooth+smooth_part.size] = smooth_part
-    
-        #print(smooth_part)
-        troughs, _ = scipy.signal.find_peaks(-smooth_part) # invert sign to find troughs
-        troughs = troughs[smooth_part[troughs] < threshold] # only allow troughs below threshold
-        troughs = [min_smooth + trough for trough in troughs] # map values in troughs to BP
+        homozygosities_to_scan = homozygosities[next_min_discovered:min_discovered+blur_window_size]        
+        min_smooth = next_min_discovered + blur_radius # index of the smallest value that will be smoothed out
+        troughs = handle_smooth_part(homozygosities_to_scan, min_smooth)
 
         min_discovered = next_min_discovered
 
         if troughs: # If this segment contains a trough
             lower_trough = troughs[-1] # take the highest index trough (scipy's find_peaks return sorted ascending array) 
             break
+    
+    if lower_trough == 0: # If still not found
+        homozygosities_to_scan = np.concatenate((
+            homozygosities[0:blur_radius],
+            homozygosities[0:blur_window_size]
+        ))
+        min_smooth = 0
+        troughs = handle_smooth_part(homozygosities_to_scan, min_smooth)
+        if troughs:
+            lower_trough = troughs[-1]
+
 
     # Find closest right trough by checking homozygosity for check_interval bps at a time.
-    while max_discovered >= 0:
+    while max_discovered < genome_length:
         next_max_discovered = min(genome_length, max_discovered + check_interval)
         sliding_homozygosity_single_slice(max_discovered, next_max_discovered,
                                       homozygosities, ht, pos, hap1_idx,
                                       hap2_idx, window)
-        smooth_part = scipy.signal.convolve(homozygosities[max_discovered-blur_window_size:next_max_discovered],
-                                            gaussian_kernel, mode='valid')
-    
+        homozygosities_to_scan = homozygosities[max_discovered-blur_window_size:next_max_discovered]
         min_smooth = max_discovered-blur_window_size+blur_radius # index of the smallest value that has been smoothed out
-        smooth_homozygosities[min_smooth:min_smooth+smooth_part.size] = smooth_part
-        
-        troughs, _ = scipy.signal.find_peaks(-smooth_part) # invert sign to find troughs
-        troughs = troughs[smooth_part[troughs] < threshold] # only allow troughs below threshold
-        troughs = [min_smooth + trough for trough in troughs] # map values in troughs to BP
+        troughs = handle_smooth_part(homozygosities_to_scan, min_smooth)
 
         max_discovered = next_max_discovered
 
@@ -396,57 +249,59 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
             upper_trough = troughs[0] # take the lowest index trough (scipy's find_peaks return sorted ascending array) 
             break
 
-    print(lower_trough, upper_trough)
+    if upper_trough == genome_length - 1: # If still not found
+        homozygosities_to_scan = np.concatenate((
+            homozygosities[genome_length - blur_window_size:genome_length],
+            homozygosities[genome_length - 1:genome_length - blur_radius:-1]
+        ))
+        min_smooth = genome_length - blur_radius
+        troughs = handle_smooth_part(homozygosities_to_scan, min_smooth)
+        if troughs:
+            upper_trough = troughs[0]
 
-    return lower_trough, upper_trough, upper_trough - lower_trough, smooth_homozygosities
+    return lower_trough, upper_trough, smooth_homozygosities
 
-# Calculating Kij (No. of SNPs in each SHL)
-def find_snp(n,gts,ht,results_computed_1,pos):
-    '''
-    This function finds the number of SNPs over the shared haplotype length for all pairs of haplotype sequences
+def calculate_SHL(lower, upper, smooth_homozygosities):
+    peaks, _ = scipy.signal.find_peaks(smooth_homozygosities[lower:upper])
+    highest = lower + round(np.mean(peaks) if peaks.size > 0 else (lower + upper) / 2)
+
+    trough_average = (smooth_homozygosities[lower] + smooth_homozygosities[upper]) / 2
+    half_threshold = (smooth_homozygosities[highest] - trough_average) / 2 + trough_average
+
+    # Find first and last value greater than half_threshold
+    # If no such value is found, left will be equal to lower
+    # and right will be equal to upper
+    left = np.argmax(smooth_homozygosities[lower:upper] >= half_threshold) + lower
+    right = (upper - 1) - np.argmax(smooth_homozygosities[upper-1::-1] >= half_threshold)
+
+    SHL = right - left
+
+    return left, right, SHL
+
+def process_haplotype_pair(pair_of_haplotypes, ht, pos, genome_length, mutation_position, points, threshold, window, check_interval):
+    h1, h2 = pair_of_haplotypes
+    lower_trough, upper_trough, smooth_homozygosities = find_lower_and_upper_troughs_fast(ht, pos, h1, h2, genome_length, mutation_position, points, threshold, window, check_interval)
+        
+    left, right, SHL = calculate_SHL(lower_trough, upper_trough, smooth_homozygosities)
+
+    # now i want to immediately calculate SNP (Kij)
+    try:
+        region = pos.locate_range(left, right)
+        htx = ht[region]
+        hap1 = htx[:, h1]
+        hap2 = htx[:, h2]
+        # Calculate Hamming distance manually aka SNP diffs
+        diff = np.sum(hap1 != hap2)        
+    except KeyError:
+        diff = 0 # set it to 0 bcs having a lot of negative values broke stuff
+        print("key error in process_haplotype_pair (set to 0) for this below:")
+        print("h1: " + h1, "h2: " + h2)
+        print("left: " + left, "right: " + right, "SHL: " + SHL)
+        print(traceback.format_exc())
+
+    print("Left:", left, "Right:", right, "SHL:", SHL, "Diff:", diff)
     
-    Arguments:
-        sample_size: sample size to calculate number of haplotype sequences
-        gts: number of haplotype pairs
-        ht: haplotype sequnces
-        results_computed_1: output from find_breakpoint function
-        pos: position of variants from convert() function 
-        
-    Returns:
-        diffs: number of SNP differences for all pairs of haplotype sequences
-        
-    '''
-    n = sample_size * 2
-    pairwise = []
-    for combo in combinations(list(range(0,n)), 2): 
-        pairwise.append(combo)
-
-    diffs = np.empty(shape=(gts),dtype=np.float32)
-    for i in range(gts):
-        pair = ht[:,pairwise[i]]
-        try:
-            start = results_computed_1[i,1]
-            stop = results_computed_1[i,2]
-
-            window_pos = pos.locate_range(start, stop)
-            window = pair[window_pos]
-
-            d = allel.pairwise_distance(window, metric = "hamming")
-
-            diffs[i]=d 
-
-        except KeyError:
-            diffs[i]=0 # set it to 0 bcs having a lot of negative values broke stuff
-            print("key error in find_snp", traceback.format_exc())
-    return diffs
-
-
-#Calculating Tij, Time to Common Ancestor (TMRCA) using mutation rate and number of SNPs
-# 𝜏_𝑖𝑗=(𝑘_𝑖𝑗+1)/(2ℓ_𝑖𝑗 (𝑟+𝜇))
-#for array number x:
-    #read in vcf file
-    # read in population size, mu, r from population parameters csv file
-
+    return [SHL, diff]
 
 def calculating_Tij(sample_size, mutation_position, genome_length, window, points, threshold):
     '''
@@ -472,38 +327,41 @@ def calculating_Tij(sample_size, mutation_position, genome_length, window, point
   
     '''    
 
-    # read in population size, mu, r from population parameters csv
-
-    # Extract haplotype sequences from .vcf file
+    # Extract haplotype sequences from .vcz file
     ht, pos, samp_freq, cols, sweep = convert(filename, sample_size, mutation_position)
 
-    # Calculate sliding homozygosity for all pairs of haplotype sequences
-    no_haplotypes = sample_size * 2
-    gts = int((no_haplotypes*(no_haplotypes-1))/2)
-    homozygosities = sliding_homozygosity(ht, pos, gts, genome_length, window)
-
-    print("homozygosities:", homozygosities, "len", len(homozygosities))
-
+    # get pairs (non repeating) of haplotypes
+    # Calculate sliding homozygosity for all pairs of haplotype sequences using fast new method
+    haplotype_combinations = list(combinations(range(ht.shape[1]), 2))
+    process_haplotype_pair_func = partial(
+        process_haplotype_pair,
+        ht=ht,
+        pos=pos,
+        genome_length=genome_length,
+        mutation_position=mutation_position,
+        points=points,
+        threshold=threshold,
+        window=window,
+        check_interval=check_interval
+    )
+    bag = db.from_sequence(haplotype_combinations, npartitions=4)
+    results_array = bag.map(process_haplotype_pair_func).compute()
     
-    # Find SHL for all pairs of haplotype sequences 
-    hom_dask = dask.array.from_array(homozygosities, chunks=(genome_length, 1)) # type: ignore # creates a dask array
-    homozygosities = []
-    results = dask.array.apply_along_axis(find_breakpoint, 0, hom_dask, mutation_position, points, threshold) # type: ignore #applies find_breakpoint() along the array
-    results_computed = results.compute()
+    print('finished calculating SHLs and diffs!')
+    
+    # turn into 1D numpy array
+    results_array = np.array(results_array) # shape: (19900, 2)
 
-    # Manipulating the dataframe to make it easier to process
-    results_computed = np.transpose(results_computed)
-    index = np.asarray(range(0,gts))
-    index = np.expand_dims(index, axis=0)
-    results_computed_1 = np.concatenate((index.T, results_computed), axis=1)
-    
-    
+    # Extract SHLs and diffs (SNPs)
+    shls = results_array[:, 0]
+    diffs = results_array[:, 1]
+
+    # Fix SHLs if needed
+    shls[shls <= 0] = genome_length
+
     # Calculate the TMRCA from the SHLs and number of SNPs
-    shls = results_computed_1[:,3]   # SHLs for all pairs of haplotype sequences 
-    shls[shls<=0] = genome_length
-    diffs = find_snp(sample_size, gts, ht, results_computed_1, pos)
     Tij = (1+diffs)/(2*shls*(recombination_rate + mutation_rate)) # TMRCA metric for all pairs of haplotype sequences 
-
+    print("calculated Tij!")
     
     # Remove negative and non-integer TMRCA values
     impute = np.nanmean(Tij)        #impute is the mean of SNP array without any NAN values
@@ -541,7 +399,7 @@ def analysis(sample_size, mutation_position, genome_length, window, points, thre
     Tij, cols = calculating_Tij(sample_size, mutation_position, genome_length, window, points, threshold)
     
     # Hierachical Clustering, store in Z
-    Z = sch.linkage(Tij, method = 'average') #why do we use the Farthest Point Algorithm? changed to average (UPGMA) , check after
+    Z = sch.linkage(Tij, method = 'average') # use average (UPGMA)
 
     ## Plot dendrogram without colouring branches
     # updating matplotlib font settings
@@ -589,9 +447,9 @@ def analysis(sample_size, mutation_position, genome_length, window, points, thre
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
 
-    pdf_output = f'{output_directory}/{basename}_update1.pdf'
-    Z_output = f'{output_directory}/{basename}_update1_Z.npy'
-    cols_output = f'{output_directory}/{basename}_update1_cols.npy'
+    pdf_output = f'{output_directory}/{basename}_updateKIT2.pdf'
+    Z_output = f'{output_directory}/{basename}_updateKIT2_Z.npy'
+    cols_output = f'{output_directory}/{basename}_updateKIT2_cols.npy'
     print (pdf_output)
     print(Z_output)
     print(cols_output)
@@ -607,9 +465,9 @@ if __name__ == '__main__':
     mutation_position = int((genome_length+1)/2)
 
 
-    threshold = 0.87  # setting threshold to calculate trough points in each haplotype
-    points=280 # smoothing 
-    window=600 # sliding window for homozygosity 
+    # threshold = 0.87  # setting threshold to calculate trough points in each haplotype
+    # points=280 # smoothing 
+    # window=600 # sliding window for homozygosity 
 
     # These are different for every vcf file
     try:
@@ -635,9 +493,16 @@ if __name__ == '__main__':
     global frequency
     frequency = float(basename_components[5])
     sample_size = int(basename_components[6])
+    no_haplotypes = sample_size*2
+    global gts
+    gts = int((no_haplotypes*(no_haplotypes-1))/2)
+    global check_interval
+    check_interval = 1000
+
 
     print("population_size", population_size)
     print("mutation_rate", mutation_rate)
     print("recombination_rate", recombination_rate)
     print("sample_size", sample_size)
+
     analysis(sample_size, mutation_position, genome_length, window, points, threshold)
