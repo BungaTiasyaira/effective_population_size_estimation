@@ -159,14 +159,28 @@ def sliding_homozygosity_single_slice(bp_start, bp_end, hom, ht, pos, hap1_idx, 
 def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length, mutation_position, points, threshold, window, check_interval):
     '''
     For a pair of sequences, this function smoothes the sliding homozygosity and returns the SHL
+    The sliding window begins at the 35000 (location of mutation), moves left and right, looks ahead "check_interval" base pairs
+    calculates homozygosity using sliding_homozygosity_single_slice function and does gaussian smoothing.
+    Checks for troughs below the set threshold, stops when found on both left and right, gets SHL. 
+    
     Arguments:
+		ht: haplotype sequences (2D array)
+        pos: variant positions (SortedIndex)
+        hap1_idx: index of first haplotype
+        hap2_idx: index of second haplotype
+        genome_length: length of genome set globally 
+        mutation_position: 35000 or middle of genome
+        points: smoothing points set globally 
+        threshold: trough threshhold set globally 
+        window: size of sliding window
         check_interval: The interval at which we sample homozygosity before checking for trough.
         
     Returns:
         lower: position of breakpoint left of the sweep site
         upper: position of breakpoint right of the sweep site
-        SHL: shared haplotype length
+        smooth_homozygosities: array of smoothed homozygosities
     '''
+    # Set parameters for Gaussian smoothing
     blur_sd_threshold = 4
     blur_radius = points * blur_sd_threshold
     blur_window_size = 2 * blur_radius + 1
@@ -174,7 +188,7 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
     gaussian_kernel = scipy.signal.windows.gaussian(blur_window_size, std=points)
     gaussian_kernel /= gaussian_kernel.sum() # normalize kernel
 
-    # Set default homozygosity to a crazy value to make it obvious when we access a yet undefined homozygosity
+    # Normalized Gaussian kernel used for smoothing homozygosity values
     homozygosities = np.full(genome_length, -99999.0)
     smooth_homozygosities = np.full(genome_length, -99999.0)
 
@@ -190,36 +204,122 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
                                       homozygosities, ht, pos, hap1_idx,
                                       hap2_idx, window)
 
+	# Defaults troughs to entire genome length
+	# will be updated when real troughs are found.
     lower_trough = 0
     upper_trough = genome_length - 1
+    lower_peak = 0
+    upper_peak = genome_length - 1
 
-    def handle_smooth_part(homozygosities_to_scan, min_smooth):
+    # Defaults peaks to middle, will update when peaks found 
+    lower_peak = middle - 1
+    upper_peak = middle + 1
+
+
+    def handle_smooth_part(homozygosities_to_scan, min_smooth, direction):
+        '''
+	    Smooths a region of the homozygosity array with a Gaussian.
+	    Finds peaks (maxima) above the threshold.
+	    Returns positions adjusted to genome coordinates.
+	    
+	    Arguments:
+		    homozygosities_to_scan: 1D window of homozygosity values.
+		    min_smooth:the starting index in the genome to smooth 
+            direction: left or right
+		    
+		  Returns:
+		    final_peak: peak identified  
+            final_trough: trough identified 
+	    '''
+        # Applies gaussian smoothing to homozygosities_to_scan
         smooth_part = scipy.signal.convolve(homozygosities_to_scan,
-                                            gaussian_kernel, mode='valid')
+                                            gaussian_kernel, mode='valid') # mode='valid': results in a shorter output than the input. 
 
+		# stores the smooth_part back into global smooth_homozygosities array, aligned to genomic coordinates
         smooth_homozygosities[min_smooth:min_smooth+smooth_part.size] = smooth_part
     
-        troughs, _ = scipy.signal.find_peaks(-smooth_part) # invert sign to find troughs
-        troughs = troughs[smooth_part[troughs] < threshold] # only allow troughs below threshold
-        troughs = [min_smooth + trough for trough in troughs] # map values in troughs to BP
+        # find peaks and troughs
+        peaks, _ = scipy.signal.find_peaks(smooth_part) # finding peak
+        troughs, _ = scipy.signal.find_peaks(-smooth_part) # finding trough, inverse peak
 
-        return troughs
+        # Adjusts peak indices to genome-wide coordinates by adding the min_smooth offset.
+        peaks = [min_smooth + peak for peak in peaks] # map values in peaks to BP
+        troughs = [min_smooth + trough for trough in troughs]
+
+        def get_peak_trough(peaks, troughs, direction):
+            '''
+            Based on the identified peaks and troughs, it finds a pair of peak and trough iteratively which has a sufficient
+            difference in homozygosity values. The pair will be returnes as the final peak and trough 
+
+            Arguments:
+                peaks: list of peaks identified
+                troughs: list of troughs identified 
+                direction: left or right 
+
+            Returns:
+                final_peak: peak identified  
+                final_trough: trough identified 
+
+            '''
+            mutation_pos = 35000   
+
+            # Handle empty peak/trough cases
+            if not peaks or not troughs:
+                # print('peak or trough list is empty')
+                return 0, 0
+    
+            # Initialize direction
+            if direction == 'left':
+                peaks = sorted(peaks, reverse=True)
+                troughs = sorted(troughs, reverse=True)
+            elif direction == 'right':
+                peaks = sorted(peaks)
+                troughs = sorted(troughs)
+
+            # Walk through peaks and try to find a matching trough
+            for i, peak in enumerate(peaks):
+                H_peak = smooth_homozygosities[peak]
+                trough_threshold = H_peak * threshold
+
+                # Find the first trough that comes **after** the peak in the direction
+                for trough in troughs:
+                    if (direction == 'left' and trough < peak) or (direction == 'right' and trough > peak):
+                        H_trough = smooth_homozygosities[trough]
+                        if H_trough < trough_threshold:
+                            return peak, trough  # Found a valid pair
+                        else:
+                            break  # Trough is too high — try next peak
+            # print("no valid peak-trough found")
+            return 0, 0  # No valid peak-trough pair found
+
+        final_peak, final_trough = get_peak_trough(peaks, troughs, direction)
+ 
+        # Returns the detected peak and trough positions.
+        return final_peak, final_trough 
 
     # Find closest left trough by checking homozygosity for check_interval bps at a time.
     while min_discovered > 0:
+        # Computes next region to evaluate on the left.
         next_min_discovered = max(0, min_discovered - check_interval)
+        # Fills in homozygosity values for this region.
         sliding_homozygosity_single_slice(next_min_discovered, min_discovered,
                                       homozygosities, ht, pos, hap1_idx,
                                       hap2_idx, window)
-
+        
+    
+        # Prepares a slice for smoothing and its minimum smoothed coordinate.
         homozygosities_to_scan = homozygosities[next_min_discovered:min_discovered+blur_window_size]        
         min_smooth = next_min_discovered + blur_radius # index of the smallest value that will be smoothed out
-        troughs = handle_smooth_part(homozygosities_to_scan, min_smooth)
+
+        # find final peak and trough after smoothing using 'handle_smooth_part' function with 'get_peak_trough' 
+        final_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, direction = 'left')
 
         min_discovered = next_min_discovered
 
-        if troughs: # If this segment contains a trough
-            lower_trough = troughs[-1] # take the highest index trough (scipy's find_peaks return sorted ascending array) 
+        # If final trough found, asign it to lower_trough and break 
+        if final_trough: 
+            lower_trough = final_trough
+            lower_peak = final_peak  
             break
     
     if lower_trough == 0: # If still not found
@@ -228,25 +328,35 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
             homozygosities[0:blur_window_size]
         ))
         min_smooth = 0
-        troughs = handle_smooth_part(homozygosities_to_scan, min_smooth)
-        if troughs:
-            lower_trough = troughs[-1]
+        final_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, direction = 'left')
+        if final_trough:
+            lower_trough = final_trough
+            lower_peak = final_peak
 
 
     # Find closest right trough by checking homozygosity for check_interval bps at a time.
     while max_discovered < genome_length:
+        # Computes next region to evaluate on the right.
         next_max_discovered = min(genome_length, max_discovered + check_interval)
+        
+        # Fills in homozygosity values for this region.
         sliding_homozygosity_single_slice(max_discovered, next_max_discovered,
                                       homozygosities, ht, pos, hap1_idx,
                                       hap2_idx, window)
+        
+        # Prepares a slice for smoothing and its minimum smoothed coordinate.
         homozygosities_to_scan = homozygosities[max_discovered-blur_window_size:next_max_discovered]
         min_smooth = max_discovered-blur_window_size+blur_radius # index of the smallest value that has been smoothed out
-        troughs = handle_smooth_part(homozygosities_to_scan, min_smooth)
+        
+        # find final peak and trough after smoothing using 'handle_smooth_part' function with 'get_peak_trough' 
+        final_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, direction = 'right')
 
         max_discovered = next_max_discovered
 
-        if troughs: # If this segment contains a trough
-            upper_trough = troughs[0] # take the lowest index trough (scipy's find_peaks return sorted ascending array) 
+        # If final trough found, asign it to upper_trough and break 
+        if final_trough: 
+            upper_trough = final_trough 
+            upper_peak = final_peak
             break
 
     if upper_trough == genome_length - 1: # If still not found
@@ -255,11 +365,12 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
             homozygosities[genome_length - 1:genome_length - blur_radius:-1]
         ))
         min_smooth = genome_length - blur_radius
-        troughs = handle_smooth_part(homozygosities_to_scan, min_smooth)
-        if troughs:
-            upper_trough = troughs[0]
+        final_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, direction = 'right')
+        if final_trough:
+            upper_trough = final_trough
+            upper_peak = final_peak
 
-    return lower_trough, upper_trough, smooth_homozygosities
+    return lower_trough, upper_trough, lower_peak, upper_peak, smooth_homozygosities
 
 def calculate_SHL(lower, upper, smooth_homozygosities):
     peaks, _ = scipy.signal.find_peaks(smooth_homozygosities[lower:upper])
@@ -280,7 +391,7 @@ def calculate_SHL(lower, upper, smooth_homozygosities):
 
 def process_haplotype_pair(pair_of_haplotypes, ht, pos, genome_length, mutation_position, points, threshold, window, check_interval):
     h1, h2 = pair_of_haplotypes
-    lower_trough, upper_trough, smooth_homozygosities = find_lower_and_upper_troughs_fast(ht, pos, h1, h2, genome_length, mutation_position, points, threshold, window, check_interval)
+    lower_trough, upper_trough, _, _, smooth_homozygosities = find_lower_and_upper_troughs_fast(ht, pos, h1, h2, genome_length, mutation_position, points, threshold, window, check_interval)
         
     left, right, SHL = calculate_SHL(lower_trough, upper_trough, smooth_homozygosities)
 
@@ -299,6 +410,7 @@ def process_haplotype_pair(pair_of_haplotypes, ht, pos, genome_length, mutation_
         print("left: " + left, "right: " + right, "SHL: " + SHL)
         print(traceback.format_exc())
 
+    print(h1, h2)
     print("Left:", left, "Right:", right, "SHL:", SHL, "Diff:", diff)
     
     return [SHL, diff]
@@ -420,7 +532,6 @@ def analysis(sample_size, mutation_position, genome_length, window, points, thre
     ax_dend.set_title('Haplotype clusters',fontsize=24)
 
 
-
     # Plot dendrogram and colour branches
     ax_dend_2 = fig.add_subplot(gs[1, 0])
     
@@ -447,9 +558,9 @@ def analysis(sample_size, mutation_position, genome_length, window, points, thre
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
 
-    pdf_output = f'{output_directory}/{basename}_updateKIT2.pdf'
-    Z_output = f'{output_directory}/{basename}_updateKIT2_Z.npy'
-    cols_output = f'{output_directory}/{basename}_updateKIT2_cols.npy'
+    pdf_output = f'{output_directory}/{basename}_updateKIT3.pdf'
+    Z_output = f'{output_directory}/{basename}_updateKIT3_Z.npy'
+    cols_output = f'{output_directory}/{basename}_updateKIT3_cols.npy'
     print (pdf_output)
     print(Z_output)
     print(cols_output)
