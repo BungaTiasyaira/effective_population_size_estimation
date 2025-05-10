@@ -180,6 +180,9 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
         upper: position of breakpoint right of the sweep site
         smooth_homozygosities: array of smoothed homozygosities
     '''
+    # print idx 
+    print(hap1_idx, hap2_idx)
+
     # Set parameters for Gaussian smoothing
     blur_sd_threshold = 4
     blur_radius = points * blur_sd_threshold
@@ -249,7 +252,7 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
         def get_peak_trough(peaks, troughs, direction):
             '''
             Based on the identified peaks and troughs, it finds a pair of peak and trough iteratively which has a sufficient
-            difference in homozygosity values. The pair will be returnes as the final peak and trough 
+            difference in homozygosity values. The pair will be returned as the final peak and trough 
 
             Arguments:
                 peaks: list of peaks identified
@@ -262,11 +265,10 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
 
             '''
             mutation_pos = 35000   
-
             # Handle empty peak/trough cases
             if not peaks or not troughs:
                 # print('peak or trough list is empty')
-                return 0, 0
+                return None, None
     
             # Initialize direction
             if direction == 'left':
@@ -286,11 +288,12 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
                     if (direction == 'left' and trough < peak) or (direction == 'right' and trough > peak):
                         H_trough = smooth_homozygosities[trough]
                         if H_trough < trough_threshold:
+                            # print(direction, "peak", peak, "trough", trough)
                             return peak, trough  # Found a valid pair
                         else:
                             break  # Trough is too high — try next peak
-            # print("no valid peak-trough found")
-            return 0, 0  # No valid peak-trough pair found
+            print("no valid peak-trough found")
+            return None, None  # No valid peak-trough pair found
 
         final_peak, final_trough = get_peak_trough(peaks, troughs, direction)
  
@@ -317,7 +320,7 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
         min_discovered = next_min_discovered
 
         # If final trough found, asign it to lower_trough and break 
-        if final_trough: 
+        if final_trough is not None: 
             lower_trough = final_trough
             lower_peak = final_peak  
             break
@@ -354,7 +357,7 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
         max_discovered = next_max_discovered
 
         # If final trough found, asign it to upper_trough and break 
-        if final_trough: 
+        if final_trough is not None: 
             upper_trough = final_trough 
             upper_peak = final_peak
             break
@@ -370,7 +373,68 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
             upper_trough = final_trough
             upper_peak = final_peak
 
-    return lower_trough, upper_trough, lower_peak, upper_peak, smooth_homozygosities
+    # get all troughs available in smooth_homozygosities
+    all_troughs, _ = scipy.signal.find_peaks(-smooth_homozygosities)
+
+    # calculating distance to mutation 
+    distance_to_mut_lower_peak = abs(mutation_position - lower_peak)
+    distance_to_mut_upper_peak = abs(mutation_position - upper_peak)
+    difference_in_peaks = abs(smooth_homozygosities[lower_peak] - smooth_homozygosities[upper_peak])
+
+    # if difference in peak is insignificant, I will pick the one closer to the mutation
+    # if difference in peak is significant, I will rely on height, however if theyre far away, I will go with the closer
+    def choose():
+        def choose_closer():
+            print('Therefore, choosing the closer one.')
+            return "left" if distance_to_mut_lower_peak < distance_to_mut_upper_peak else "right" 
+        def choose_higher():
+            print('Therefore, choosing the higher one.')
+            return "left" if smooth_homozygosities[lower_peak] > smooth_homozygosities[upper_peak] else "right"
+
+        # print('Deciding which peak to pick...')
+        print(f'Lower peak - {lower_peak}, {smooth_homozygosities[lower_peak]:.3}')
+        print(f'Upper peak - {upper_peak}, {smooth_homozygosities[upper_peak]:.3}')
+        print(f'Difference: {difference_in_peaks:.3}') # :.3 means to 3 significant figures
+
+
+        # if difference in peak is insignificant, or they are far away, I will pick the one closer to the mutation
+        if difference_in_peaks < 0.01:
+            print(f'Difference in peaks is insignificant')
+            return choose_closer()
+
+        # if one of them is far away, pick the closer one 
+        if distance_to_mut_lower_peak > 5000 or distance_to_mut_upper_peak > 5000:
+            print('One of them is far away...')
+            return choose_closer()
+        
+        # Otherwise, rely on height
+        print(f'Both peaks are close, difference in peaks is significant...')
+        return choose_higher()
+
+    decision = choose()
+    print(f'Chose {decision}.')
+    assert(decision == "left" or decision == "right")
+        
+    if decision == "left":
+        selected_threshold = smooth_homozygosities[lower_peak]*0.87
+        chosen_peak = lower_peak
+        notchosen_peak = upper_peak
+        # scan right for valid troughs
+        for trough in sorted(all_troughs):
+            if trough > mutation_position and smooth_homozygosities[trough] < selected_threshold:
+                upper_trough = trough
+                break
+    elif decision == "right":
+        selected_threshold = smooth_homozygosities[upper_peak]*0.87
+        chosen_peak = upper_peak
+        notchosen_peak = lower_peak
+        # scan left for valid troughs
+        for trough in sorted(all_troughs, reverse=True):
+            if trough < mutation_position and smooth_homozygosities[trough] < selected_threshold:
+                lower_trough = trough
+                break
+
+    return lower_trough, upper_trough, chosen_peak, notchosen_peak, smooth_homozygosities
 
 def calculate_SHL(lower, upper, smooth_homozygosities):
     peaks, _ = scipy.signal.find_peaks(smooth_homozygosities[lower:upper])
@@ -558,9 +622,9 @@ def analysis(sample_size, mutation_position, genome_length, window, points, thre
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
 
-    pdf_output = f'{output_directory}/{basename}_updateKIT3.pdf'
-    Z_output = f'{output_directory}/{basename}_updateKIT3_Z.npy'
-    cols_output = f'{output_directory}/{basename}_updateKIT3_cols.npy'
+    pdf_output = f'{output_directory}/{basename}_updateMANTKU.pdf'
+    Z_output = f'{output_directory}/{basename}_updateMANTKU_Z.npy'
+    cols_output = f'{output_directory}/{basename}_updateMANTKU_cols.npy'
     print (pdf_output)
     print(Z_output)
     print(cols_output)
