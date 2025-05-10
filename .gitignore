@@ -1,5 +1,6 @@
 **__pycache**
 1/
+1_investigating_100mutants/
 2/
 3/
 4/
@@ -12,3 +13,7 @@
 old_logs/
 unused/
 tree_files/
+singer/*.txt
+singer/*/*.txt
+singer/*/*.trees
+singer/code
