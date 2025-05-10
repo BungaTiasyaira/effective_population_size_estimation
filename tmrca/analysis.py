@@ -38,8 +38,8 @@ def get_paths(basename, threshold, points, window):
 
     tmrca_folder = f'{seed_index}/TMRCA/{frequency}/{sample_size}'
     tmrca_output_format = f'{tmrca_folder}/{file_general_format}_{sample_size}_{threshold}_{points}_{window}'
-    Z_path = f'{tmrca_output_format}_updateMANTKU_Z.npy'
-    cols_path = f'{tmrca_output_format}_updateMANTKU_cols.npy'
+    Z_path = f'{tmrca_output_format}_Z.npy'
+    cols_path = f'{tmrca_output_format}_cols.npy'
 
     trees_folder = f'{seed_index}/TREES'
     trees_path = f'{trees_folder}/{file_general_format}.trees'
@@ -50,7 +50,7 @@ def get_paths(basename, threshold, points, window):
     output_folder = f'{seed_index}/TMRCA_dendograms/{frequency}/{sample_size}'
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
-    output_path = f'{output_folder}/{file_general_format}_{sample_size}_{threshold}_{points}_{window}_updateMANTKU_analysis.pdf'
+    output_path = f'{output_folder}/{file_general_format}_{sample_size}_{threshold}_{points}_{window}_analysis.pdf'
 
     return Z_path, cols_path, trees_path, sample_ID_path, output_path
 

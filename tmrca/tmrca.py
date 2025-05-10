@@ -622,9 +622,9 @@ def analysis(sample_size, mutation_position, genome_length, window, points, thre
     if not os.path.exists(output_directory):
         os.makedirs(output_directory)
 
-    pdf_output = f'{output_directory}/{basename}_updateMANTKU.pdf'
-    Z_output = f'{output_directory}/{basename}_updateMANTKU_Z.npy'
-    cols_output = f'{output_directory}/{basename}_updateMANTKU_cols.npy'
+    pdf_output = f'{output_directory}/{basename}.pdf'
+    Z_output = f'{output_directory}/{basename}_Z.npy'
+    cols_output = f'{output_directory}/{basename}_cols.npy'
     print (pdf_output)
     print(Z_output)
     print(cols_output)
