@@ -154,17 +154,25 @@ def get_mapping_of_haplotype_to_mutation(trees_path, txt_path):
 
     ancestral_state = site.ancestral_state
 
+    # Hack to ignore mutations of type 0
+    broken_type_0_mutations = {}
     for mut in site.mutations:
+        if all([m['slim_time'] < 5000 for m in mut.metadata['mutation_list']]):
+            broken_type_0_mutations[mut.id] = mut
+
+    for mut in site.mutations:
+        if mut.id in broken_type_0_mutations:
+            continue
         state_map[mut.node] = mut.derived_state
         origin_node_map[mut.node] = mut.node
-        if mut.parent != tskit.NULL:
+        if mut.parent != tskit.NULL and mut.parent not in broken_type_0_mutations:
             parent_mut_node = ts.mutation(mut.parent).node
             origin_node_map[mut.node] = origin_node_map.get(parent_mut_node, parent_mut_node)
 
     # === Function to trace mutation state and origin ===
     def get_state_origin_and_time(node_id):
         current = node_id
-        while current != tskit.NULL:
+        while current != tskit.NULL and current not in broken_type_0_mutations:
             if current in state_map:
                 origin_node = origin_node_map[current]
                 origin_time = ts.node(origin_node).time

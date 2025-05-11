@@ -61,9 +61,8 @@ print('Z', Z.shape, Z)
 print('cols', cols)
 haplotype_to_mutation = get_mapping_of_haplotype_to_mutation(trees_path,
                                                                  sample_ID_path)
-
 mutations = sorted(list(set(haplotype_to_mutation.values())), key=lambda mut: mut.get_generation())
-print(mutations)
+print('Mutations:', mutations)
 for i, mutation in enumerate(mutations):
     mutation.set_color(matplotlib.colors.to_hex(matplotlib.colormaps['gist_rainbow'](np.linspace(0, 1, len(mutations)))[i]))
 
@@ -218,7 +217,7 @@ ax_dend_2.text(0.5, 0, f'{analysis_total_score}', ha='center')
 ax_dend_2.axis('off')
 
 
-
+print('TMRCA dendogram output to', output_path)
 plt.savefig(output_path)
 
 with open("meta.csv", "a") as file:
