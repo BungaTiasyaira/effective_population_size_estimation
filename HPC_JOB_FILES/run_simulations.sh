@@ -1,13 +1,13 @@
 #!/bin/bash
 
-#PBS -N TMRCA
+#PBS -N syaii_simulations
 #PBS -j oe
-#PBS -J 1-19
+#PBS -k oe
 
 #PBS -m ae
 
 #PBS -l walltime=72:00:00
-#PBS -l select=1:ncpus=4:mem=15gb
+#PBS -l select=1:ncpus=24:mem=15gb
 
 ## NB values for ncpus and mem are allocated
 ## to each node (specified by select=N)
@@ -17,7 +17,7 @@
 ##
 cd $PBS_O_WORKDIR
 JOBNUM=`echo $PBS_JOBID | sed 's/\..*//'`
-LOGFILE=${PBS_JOBNAME}.o${JOBNUM}.i${PBS_ARRAY_INDEX}
+LOGFILE=${PBS_JOBNAME}.o${JOBNUM}
 
 #########################################
 ##                                     ##
@@ -47,34 +47,33 @@ echo ------------------------------------------------------
 module load anaconda3/personal vcftools
 source activate slim_fyp
 
-echo "PBS job array index is $PBS_ARRAY_INDEX"
+filename="SLIM_SIMULATION/parameter_combinations.txt"
+seed_filename="SLIM_SIMULATION/seeds.txt"
 
-FILE="active_zars.txt"
-LINE_NUM="$PBS_ARRAY_INDEX"
-
-LINE_NUM=$((LINE_NUM+1)) # skip column names
-
-if [[ ! -f "$FILE" ]]; then
-    echo "Error: File '$FILE' does not exist."
+# Check if file exists
+if [ ! -f "$filename" ]; then
+    echo "Parameter File not found!"
     exit 1
 fi
 
-if ! [[ "$LINE_NUM" =~ ^[0-9]+$ ]]; then
-    echo "Error: Line number must be a positive integer."
+if [ ! -f "$seed_filename" ]; then
+    echo "Seed File not found!"
     exit 1
 fi
 
-LINE=$(sed -n "${LINE_NUM}p" "$FILE")
+# Read file line by line
+while IFS= read -r line; do
+    IFS=',' read -ra words <<< "$line"
+    seed_id=${words[0]}
+    seed=${words[1]}
+    tail -n +2 "$filename" | while IFS= read -r line; do
+        # Split by comma and read each word
+        IFS=',' read -ra words <<< "$line"
+        echo Running simulation with population_size=${words[0]} mut_rate=${words[1]} recomb_rate=${words[2]} burnin_number=${words[3]} seed=${seed}
+        slim -d population_size=${words[0]} -d mut_rate=${words[1]} -d recomb_rate=${words[2]} -d burnin_number=${words[3]} -d seed=${seed} -d seed_id=${seed_id} SLIM_SIMULATION/SS_all.slim
+    done
+done < "$seed_filename"
 
-if [[ -z "$LINE" ]]; then
-    echo "Error: Line $LINE_NUM does not exist in '$FILE'."
-    exit 1
-fi
-
-
-IFS=',' read -ra words <<< "$LINE"
-echo ${words[0]} ${words[1]} ${words[2]} ${words[3]}
-
-python3 tmrca/tmrca.py ${words[0]} ${words[1]} ${words[2]} ${words[3]}
-
-echo "Finished running TMRCA"
+## move LOGFILE to cwd
+##
+echo "Finished running simulations"
