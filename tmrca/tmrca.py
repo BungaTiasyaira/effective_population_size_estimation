@@ -219,7 +219,7 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
     upper_peak = middle + 1
 
 
-    def handle_smooth_part(homozygosities_to_scan, min_smooth, direction):
+    def handle_smooth_part(homozygosities_to_scan, min_smooth, highest_peak, direction):
         '''
 	    Smooths a region of the homozygosity array with a Gaussian.
 	    Finds peaks (maxima) above the threshold.
@@ -229,9 +229,10 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
 		    homozygosities_to_scan: 1D window of homozygosity values.
 		    min_smooth:the starting index in the genome to smooth 
             direction: left or right
+            highest_peak: highest peak so far identified
 		    
 		  Returns:
-		    final_peak: peak identified  
+		    highest_peak: highest peak so far identified
             final_trough: trough identified 
 	    '''
         # Applies gaussian smoothing to homozygosities_to_scan
@@ -249,7 +250,7 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
         peaks = [min_smooth + peak for peak in peaks] # map values in peaks to BP
         troughs = [min_smooth + trough for trough in troughs]
 
-        def get_peak_trough(peaks, troughs, direction):
+        def get_peak_trough(peaks, troughs, highest_peak, direction):
             '''
             Based on the identified peaks and troughs, it finds a pair of peak and trough iteratively which has a sufficient
             difference in homozygosity values. The pair will be returned as the final peak and trough 
@@ -257,50 +258,52 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
             Arguments:
                 peaks: list of peaks identified
                 troughs: list of troughs identified 
-                direction: left or right 
+                direction: left or right
+                highest_peak: highest peak so far identified
 
             Returns:
-                final_peak: peak identified  
+                highest_peak: highest peak so far identified
                 final_trough: trough identified 
 
             '''
-            mutation_pos = 35000   
             # Handle empty peak/trough cases
             if not peaks or not troughs:
-                # print('peak or trough list is empty')
-                return None, None
+                return highest_peak, None
     
-            # Initialize direction
-            if direction == 'left':
-                peaks = sorted(peaks, reverse=True)
-                troughs = sorted(troughs, reverse=True)
-            elif direction == 'right':
-                peaks = sorted(peaks)
-                troughs = sorted(troughs)
+            # Turn peaks and troughs into event list
+            events = [(int(idx), 'peak') for idx in peaks] + [(int(idx), 'trough') for idx in troughs]
+            events.sort(key=lambda x: x[0], reverse=(direction == 'left'))
 
-            # Walk through peaks and try to find a matching trough
-            for i, peak in enumerate(peaks):
-                H_peak = smooth_homozygosities[peak]
-                trough_threshold = H_peak * threshold
+            print(events)
+            
+            H_highest_peak = smooth_homozygosities[highest_peak] if highest_peak is not None else -float('inf')
 
-                # Find the first trough that comes **after** the peak in the direction
-                for trough in troughs:
-                    if (direction == 'left' and trough < peak) or (direction == 'right' and trough > peak):
-                        H_trough = smooth_homozygosities[trough]
-                        if H_trough < trough_threshold:
-                            # print(direction, "peak", peak, "trough", trough)
-                            return peak, trough  # Found a valid pair
-                        else:
-                            break  # Trough is too high — try next peak
+            # Walk through peaks or troughs in order
+            for idx, kind in events:
+                value = smooth_homozygosities[idx]
+                # If this is a peak and it's highest than any peak we encountered so far, make it the highest
+                if kind == 'peak' and value > H_highest_peak:
+                    print('New highest peak is at', idx, 'with H', value)
+                    highest_peak = idx
+                    H_highest_peak = value
+                # If this is a trough and
+                # - we encountered a peak before
+                # - the trough's value is smaller than the highest peak's value times threshold
+                # Then we found our peak-trough pair!
+                elif kind == 'trough' and highest_peak is not None and value < H_highest_peak * threshold:
+                    print('Found trough at', idx, 'with H', value)
+                    return highest_peak, idx
+
             print("no valid peak-trough found")
-            return None, None  # No valid peak-trough pair found
+            return highest_peak, None  # No valid peak-trough pair found
 
-        final_peak, final_trough = get_peak_trough(peaks, troughs, direction)
+        highest_peak, final_trough = get_peak_trough(peaks, troughs, highest_peak, direction)
  
         # Returns the detected peak and trough positions.
-        return final_peak, final_trough 
+        return highest_peak, final_trough 
 
     # Find closest left trough by checking homozygosity for check_interval bps at a time.
+    highest_peak = None
     while min_discovered > 0:
         # Computes next region to evaluate on the left.
         next_min_discovered = max(0, min_discovered - check_interval)
@@ -315,14 +318,14 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
         min_smooth = next_min_discovered + blur_radius # index of the smallest value that will be smoothed out
 
         # find final peak and trough after smoothing using 'handle_smooth_part' function with 'get_peak_trough' 
-        final_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, direction = 'left')
+        highest_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, highest_peak, direction = 'left')
 
         min_discovered = next_min_discovered
 
         # If final trough found, asign it to lower_trough and break 
         if final_trough is not None: 
             lower_trough = final_trough
-            lower_peak = final_peak  
+            lower_peak = highest_peak  
             break
     
     if lower_trough == 0: # If still not found
@@ -331,13 +334,14 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
             homozygosities[0:blur_window_size]
         ))
         min_smooth = 0
-        final_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, direction = 'left')
+        highest_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, highest_peak, direction = 'left')
         if final_trough:
             lower_trough = final_trough
-            lower_peak = final_peak
+            lower_peak = highest_peak
 
 
     # Find closest right trough by checking homozygosity for check_interval bps at a time.
+    highest_peak = None
     while max_discovered < genome_length:
         # Computes next region to evaluate on the right.
         next_max_discovered = min(genome_length, max_discovered + check_interval)
@@ -352,14 +356,14 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
         min_smooth = max_discovered-blur_window_size+blur_radius # index of the smallest value that has been smoothed out
         
         # find final peak and trough after smoothing using 'handle_smooth_part' function with 'get_peak_trough' 
-        final_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, direction = 'right')
+        highest_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, highest_peak, direction = 'right')
 
         max_discovered = next_max_discovered
 
         # If final trough found, asign it to upper_trough and break 
         if final_trough is not None: 
             upper_trough = final_trough 
-            upper_peak = final_peak
+            upper_peak = highest_peak
             break
 
     if upper_trough == genome_length - 1: # If still not found
@@ -368,10 +372,10 @@ def find_lower_and_upper_troughs_fast(ht, pos, hap1_idx, hap2_idx, genome_length
             homozygosities[genome_length - 1:genome_length - blur_radius:-1]
         ))
         min_smooth = genome_length - blur_radius
-        final_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, direction = 'right')
+        highest_peak, final_trough = handle_smooth_part(homozygosities_to_scan, min_smooth, highest_peak, direction = 'right')
         if final_trough:
             upper_trough = final_trough
-            upper_peak = final_peak
+            upper_peak = highest_peak
 
     # get all troughs available in smooth_homozygosities
     all_troughs, _ = scipy.signal.find_peaks(-smooth_homozygosities)

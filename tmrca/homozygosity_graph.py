@@ -9,14 +9,14 @@ genome_length = 70001
 window = 100
 check_interval = 5000
 mutation_position = int((genome_length+1)/2)
-ht, pos, samp_freq, cols, sweep = convert('1/ZARR/0.5/100/1_13_1000_0.00025_2.5e-05_0.5_100.vcz', sample_size, mutation_position)
+ht, pos, samp_freq, cols, sweep = convert('1_investigating_100mutants/ZARR/0.5/100/1_14_1000_0.00025_0.00025_0.5_100.vcz', sample_size, mutation_position)
 no_haplotypes = sample_size * 2
 gts = int((no_haplotypes*(no_haplotypes-1))/2)
-points = 150
+points = 50
 threshold = 0.87
 
 # run function
-lower_trough, upper_trough, chosen_peak, notchosen_peak, smooth_homozygosities = find_lower_and_upper_troughs_fast(ht, pos, 2, 10, genome_length, mutation_position, points, threshold, window, check_interval)
+lower_trough, upper_trough, chosen_peak, notchosen_peak, smooth_homozygosities = find_lower_and_upper_troughs_fast(ht, pos, 6, 63, genome_length, mutation_position, points, threshold, window, check_interval)
 
 # print final values found 
 print('lower  trough:', lower_trough, f"{smooth_homozygosities[lower_trough]:.2f}",

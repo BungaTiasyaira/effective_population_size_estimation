@@ -36,9 +36,6 @@ class Haplotype:
         
         return "#808080"
 
-    def is_mutant(self):
-        return self.mutation is not None
-
     def __repr__(self):
         return f"Haplotype {self.idx} {self.get_color()}"
 
@@ -137,13 +134,8 @@ def get_mapping_of_haplotype_to_mutation(trees_path, txt_path):
     ts = tskit.load(trees_path)  # <-- Replace with your file
 
     # === Load included individual IDs from a file ===
-    if txt_path is None:
-        included_individuals = list(range(0, ts.num_individuals))
-    else:
-        with open(txt_path, "r") as f:
-            included_individuals = [int(line.strip()) for line in f if line.strip().isdigit()]
-
-    # print(f"Including {len(included_individuals)} individuals.")
+    with open(txt_path, "r") as f:
+        included_individuals = [int(line.strip()) for line in f if line.strip().isdigit()]
 
     # === Define target position ===
     target_position = 35000
@@ -151,7 +143,7 @@ def get_mapping_of_haplotype_to_mutation(trees_path, txt_path):
     # === Find the site at that position ===
     site = next((s for s in ts.sites() if int(s.position) == target_position), None)
     if site is None:
-        # print(f"No mutation found at position {target_position}")
+        print(f"No mutation found at position {target_position}")
         exit()
 
     tree = ts.at(site.position)
@@ -177,13 +169,17 @@ def get_mapping_of_haplotype_to_mutation(trees_path, txt_path):
             parent_mut_node = ts.mutation(mut.parent).node
             origin_node_map[mut.node] = origin_node_map.get(parent_mut_node, parent_mut_node)
 
+    print('state_map', state_map)
     # === Function to trace mutation state and origin ===
     def get_state_origin_and_time(node_id):
         current = node_id
+        print('getting state origin and time of', node_id)
         while current != tskit.NULL and current not in broken_type_0_mutations:
+            print('current', current)
             if current in state_map:
                 origin_node = origin_node_map[current]
                 origin_time = ts.node(origin_node).time
+                print('current origin_node', origin_node, 'origin_time', origin_time)
                 return state_map[current], origin_node, origin_time, origin_node_map[current]
             current = tree.parent(current)
         return ancestral_state, None, None, None
@@ -192,7 +188,7 @@ def get_mapping_of_haplotype_to_mutation(trees_path, txt_path):
     generation_to_parents = defaultdict(lambda: defaultdict(list))
 
     # === Process and print haplotype info ===
-    # print(f"Mutation states at position {target_position}:\n")
+    print(f"Mutation states at position {target_position}:\n")
 
     # Create a dictionary to map individual ID to order in the file
     individual_order = {ind_id: idx + 1 for idx, ind_id in enumerate(included_individuals)}
@@ -201,7 +197,7 @@ def get_mapping_of_haplotype_to_mutation(trees_path, txt_path):
         try:
             individual = ts.individual(ind_id)
         except ValueError:
-            # print(f"Individual {ind_id} not found.")
+            print(f"Individual {ind_id} not found.")
             continue
 
         for node_id in individual.nodes:
@@ -212,28 +208,30 @@ def get_mapping_of_haplotype_to_mutation(trees_path, txt_path):
                 generation_to_parents[origin_time][parent_id].append((state, node_id, ind_id))
 
             # Optional: print to screen
-            # print(f"Haplotype: {node_id}")
-            # print(f"From individual: {ind_id}")
-            # print(f"Mutation state of position {target_position}: {state}")
-            # print(f"Node where this mutation appeared first: {origin_node}")
-            # print(f"Generation where it appeared: {origin_time}")
-            # print(f"Parent mutation ID: {parent_id}")
-            # print("-" * 60)
+            print(f"Haplotype: {node_id}")
+            print(f"From individual: {ind_id}")
+            print(f"Mutation state of position {target_position}: {state}")
+            print(f"Node where this mutation appeared first: {origin_node}")
+            print(f"Generation where it appeared: {origin_time}")
+            print(f"Parent mutation ID: {parent_id}")
+            print("-" * 60)
+
+    print('inndividual order', individual_order)
 
     # Generate mapping
     haplotype_to_mutation = {}
 
     for generation in sorted(generation_to_parents.keys()):
-        # print(f"Generation where it appeared: {generation}\n")
+        print(f"Generation where it appeared: {generation}\n")
         for parent_id, haplotypes in generation_to_parents[generation].items():
-            # print(f"Parent ID: {parent_id}\n")
+            print(f"Parent ID: {parent_id}\n")
             this_generation_haplotypes = [(individual_order[hap[2]] - 1) * 2 + (1 if  hap[1] % 2 == 1 else 0) for hap in haplotypes]
             mutation = Mutation(generation, this_generation_haplotypes)
             for haplotype in this_generation_haplotypes:
                 haplotype_to_mutation[int(haplotype)] = mutation
             #out.write(", ".join([f"{hap[1]}({hap[2]})({individual_order[hap[2]]})({(individual_order[hap[2]] - 1) * 2 + (1 if  hap[1] % 2 == 1 else 0)})" for hap in haplotypes]) + "\n")
-            # print(this_generation_haplotypes)
-        # print("------")
+            print(this_generation_haplotypes)
+        print("------")
 
     return haplotype_to_mutation
     
