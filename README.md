@@ -8,6 +8,7 @@ It is designed to estimate the number of independent origins (𝜂) and infer ve
 - _Multi-origin_ ➡ refers to the fact that soft sweeps arise when a beneficial mutation appears independently on multiple haplotypes
 - _Estimation_ ➡  indicates that the method provides a quantitative heuristic to infer the number of origins
 - _of Widespread Soft Sweeps_ ➡ targets soft selective sweeps!
+- its a super cute name _duuh_...
 
 ## 📖 About
 
@@ -16,7 +17,7 @@ It is designed to estimate the number of independent origins (𝜂) and infer ve
 - **Supervisor:** Dr Bhavin Khatri
 
 ## 🪜 MEOWSS Workflow
-a brief outline of the experimental workflow, more details on [my report](https://docs.google.com/document/d/.151sB2UNQ25oAq-I8lZecM9KjynHKLwHxQE8o99DtFuk/edit?usp=sharing). Most scripts were run on the Imperial High Performance Cluster (HPC) using a `.sh` file.
+a brief outline of the experimental workflow, more details on [my report](https://docs.google.com/document/d/151sB2UNQ25oAq-I8lZecM9KjynHKLwHxQE8o99DtFuk/edit?usp=sharing). Most scripts were run on the Imperial High Performance Cluster (HPC) using a `.sh` file.
 ### 1️⃣ Soft Sweep Simulations in [SLiM 4](https://messerlab.org/slim/)
 1. Create burn-in populations (store in `.trees` files)
 2. Start Soft Sweep simulation with the burn-ins<br/>
