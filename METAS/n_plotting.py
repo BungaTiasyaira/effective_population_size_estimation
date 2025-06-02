@@ -67,14 +67,18 @@ df['sim_id'] = df['sim_id'].astype(int)
 df['allele_freq'] = df['allele_freq'].astype(float)
 
 # Group by sim_id and allele_freq, average numeric columns
-grouped = df.groupby(['method', 'sim_id', 'allele_freq'])[numeric_cols].mean().reset_index()
+grouped_mean = df.groupby(['method', 'sim_id', 'allele_freq'])[numeric_cols].mean()
+grouped_std = df.groupby(['method', 'sim_id', 'allele_freq'])[numeric_cols].std()
+
+grouped_mean = grouped_mean.reset_index()
+grouped_std = grouped_std.reset_index()
 
 # Define the full sets of columns
 full_n_cols = ['n_d_1','n_d_2','n_d_3','n_d_4','n_s','n_p']
 full_Ne_cols = ['Ne_d_1','Ne_d_2','Ne_d_3','Ne_d_4','Ne_s','Ne_p']
 
 # Create identifier for x-axis
-grouped['sim_label'] = grouped['sim_id'].astype(str) + "_" + grouped['allele_freq'].astype(str)
+grouped_mean['sim_label'] = grouped_mean['sim_id'].astype(str) + "_" + grouped_mean['allele_freq'].astype(str)
 
 # Define your simulation ID groups, columns to plot, and colors for each column
 plot_configs = [
@@ -92,41 +96,68 @@ plot_configs = [
     }
 ]
 
+def plot_using_matplotlib(ax, data, data_std, colors):
+    x = np.arange(len(data.columns))  # positions for each group on x-axis
+    n_bars = len(data.index)          # number of bars in each group
+    total_width = 0.8                        # total width reserved per group
+    bar_width = total_width / n_bars        # width of each individual bar
+
+    for i, (label, row) in enumerate(data.iterrows()):
+        offset = (i - n_bars / 2) * bar_width + bar_width / 2
+        std_row = data_std.loc[label]
+
+        ax.bar(x + offset, row.values, width=bar_width, color=colors[i], label=label, yerr=std_row.values,
+        capsize=5)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(data.columns, rotation=45, ha='right')
+
+
 
 for config in plot_configs:
-    sim_group = grouped[grouped['sim_id'].isin(config['sim_ids'])]
+    sim_group_mean = grouped_mean[grouped_mean['sim_id'].isin(config['sim_ids'])]
+    sim_group_std = grouped_std[grouped_std['sim_id'].isin(config['sim_ids'])]
 
     # === For n plots (per AF) ===
-    for af in sorted(sim_group['allele_freq'].unique()):
-        sub_group = sim_group[sim_group['allele_freq'] == af].copy()
+    for af in sorted(sim_group_mean['allele_freq'].unique()):
+        sub_mean = sim_group_mean[sim_group_mean['allele_freq'] == af].copy()
+        sub_std = sim_group_std[sim_group_std['allele_freq'] == af].copy()
 
-        bar_data_n = pd.DataFrame()
+        bar_data_n, bar_data_n_std = pd.DataFrame(), pd.DataFrame()
         xticks_labels_n = []
         colors_n = []
 
-        for method in sub_group['method'].unique():
-            method_group = sub_group[sub_group['method'] == method]
+        for method in sub_mean['method'].unique():
+            mean_group = sub_mean[sub_mean['method'] == method]
+            std_group = sub_std[sub_std['method'] == method]
 
-            for _, row in method_group.iterrows():
+            for _, row in mean_group.iterrows():
                 label = f"{row['sim_id']}_{af}"
+                std_row = std_group[(std_group['sim_id'] == row['sim_id']) & (std_group['allele_freq'] == row['allele_freq'])].squeeze()
                 xticks_labels_n.append(label)
 
                 # Collect n-values per method
                 for col in config['n_cols']:
                     if 'd_' in col:
                         bar_data_n.loc[f"{method}_{col}", label] = row[col]
+                        bar_data_n_std.loc[f"{method}_{col}", label] = std_row[col]
                         colors_n.append(method_color_map[method][col])
                     elif 's' in col or 'p' in col:
                         bar_data_n.loc[f"GT_{col}", label] = row[col]
+                        bar_data_n_std.loc[f"GT_{col}", label] = std_row[col]
                         colors_n.append(ground_truth_color_map[col])
 
         # Reorder bar_data_n rows
-        desired_order_n = []
-        desired_order_n += [idx for idx in bar_data_n.index if idx.startswith('MEOWSS_')]
-        desired_order_n += [idx for idx in bar_data_n.index if idx.startswith('phasedibd_')]
-        desired_order_n += [idx for idx in bar_data_n.index if idx.startswith('SINGER_')]
-        desired_order_n += [idx for idx in bar_data_n.index if idx.startswith('GT_')]
-        bar_data_n = bar_data_n.loc[desired_order_n]
+        def put_in_desired_order(data):
+            desired_order = []
+            desired_order += [idx for idx in data.index if idx.startswith('MEOWSS_')]
+            desired_order += [idx for idx in data.index if idx.startswith('phasedibd_')]
+            desired_order += [idx for idx in data.index if idx.startswith('SINGER_')]
+            desired_order += [idx for idx in data.index if idx.startswith('GT_')]
+            return data.loc[desired_order]
+
+        bar_data_n = put_in_desired_order(bar_data_n)
+        bar_data_n_std = put_in_desired_order(bar_data_n_std)
         
         colors_n = [
             method_color_map.get(row.split('_')[0], ground_truth_color_map).get('_'.join(row.split('_')[1:]), '#000000')
@@ -135,12 +166,17 @@ for config in plot_configs:
         ]
 
         bar_data_n.rename(index=legend_label_map, inplace=True)
+        bar_data_n_std.rename(index=legend_label_map, inplace=True)
+
+
 
         # === Plot n values ===
-        ax = bar_data_n.T.plot(kind='bar', figsize=(12,6), color=colors_n, title=f"Number of Origins at AF={af}")
+        fig, ax = plt.subplots(figsize=(20, 12))
+        plot_using_matplotlib(ax, bar_data_n, bar_data_n_std, colors_n)
+        # ax = bar_data_n.T.plot(kind='bar', yerr=bar_data_n_std.values, figsize=(12,6), color=colors_n, title=f"Number of Origins at AF={af}")
         added_lines = set()
 
-        for sim_id in sub_group['sim_id'].unique():
+        for sim_id in sub_mean['sim_id'].unique():
             if sim_id in [13, 14, 15]:
                 if af == 0.5 and 'theta1_af0.5' not in added_lines:
                     ax.axhline(y=4.615, color='red', linestyle='--', linewidth=1.5, label='n modelled (θ=1, AF=0.5)')
@@ -163,36 +199,37 @@ for config in plot_configs:
         plt.close()
 
     # === For Ne plot (combine all AFs into one) ===
-    bar_data_Ne = pd.DataFrame()
+    bar_data_Ne, bar_data_Ne_std = pd.DataFrame(), pd.DataFrame()
     xticks_labels_Ne = []
     colors_Ne = []
 
-    for af in sorted(sim_group['allele_freq'].unique()):
-        sub_group = sim_group[sim_group['allele_freq'] == af].copy()
+    for af in sorted(sim_group_mean['allele_freq'].unique()):
+        sub_mean = sim_group_mean[sim_group_mean['allele_freq'] == af].copy()
+        sub_std = sim_group_std[sim_group_std['allele_freq'] == af].copy()
 
-        for method in sub_group['method'].unique():
-            method_group = sub_group[sub_group['method'] == method]
+        for method in sub_mean['method'].unique():
+            mean_group = sub_mean[sub_mean['method'] == method]
+            std_group = sub_std[sub_std['method'] == method]
 
-            for _, row in method_group.iterrows():
+            for _, row in mean_group.iterrows():
                 label = f"{row['sim_id']}_{af}"
+                std_row = std_group[(std_group['sim_id'] == row['sim_id']) & (std_group['allele_freq'] == row['allele_freq'])].squeeze()
                 xticks_labels_Ne.append(label)
 
                 # Collect Ne-values per method
                 for col in config['Ne_cols']:
                     if 'd_' in col:
                         bar_data_Ne.loc[f"{method}_{col}", label] = row[col]
+                        bar_data_Ne_std.loc[f"{method}_{col}", label] = std_row[col]
                         colors_Ne.append(method_color_map[method][col])
                     elif 's' in col or 'p' in col:
                         bar_data_Ne.loc[f"GT_{col}", label] = row[col]
+                        bar_data_Ne_std.loc[f"GT_{col}", label] = std_row[col]
                         colors_Ne.append(ground_truth_color_map[col])
 
     # Reorder bar_data_Ne rows
-    desired_order_Ne = []
-    desired_order_Ne += [idx for idx in bar_data_Ne.index if idx.startswith('MEOWSS_')]
-    desired_order_Ne += [idx for idx in bar_data_Ne.index if idx.startswith('phasedibd_')]
-    desired_order_Ne += [idx for idx in bar_data_Ne.index if idx.startswith('SINGER_')]
-    desired_order_Ne += [idx for idx in bar_data_Ne.index if idx.startswith('GT_')]
-    bar_data_Ne = bar_data_Ne.loc[desired_order_Ne]
+    bar_data_Ne = put_in_desired_order(bar_data_Ne)
+    bar_data_Ne_std = put_in_desired_order(bar_data_Ne_std)
 
     colors_Ne = [
         method_color_map.get(row.split('_')[0], ground_truth_color_map).get('_'.join(row.split('_')[1:]), '#000000')
@@ -201,27 +238,19 @@ for config in plot_configs:
     ]
 
     bar_data_Ne.rename(index=legend_label_map, inplace=True)
+    bar_data_Ne_std.rename(index=legend_label_map, inplace=True)
 
 
     # === Plot Ne values ===
     plt.rcParams.update({'font.size': 20})
     fig, ax = plt.subplots(figsize=(20, 12))
 
-    x = np.arange(len(bar_data_Ne.columns))  # positions for each group on x-axis
-    n_bars = len(bar_data_Ne.index)          # number of bars in each group
-    total_width = 0.8                        # total width reserved per group
-    bar_width = total_width / n_bars        # width of each individual bar
-
-    for i, (label, row) in enumerate(bar_data_Ne.iterrows()):
-        offset = (i - n_bars / 2) * bar_width + bar_width / 2
-        ax.bar(x + offset, row.values, width=bar_width, color=colors_Ne[i], label=label)
+    plot_using_matplotlib(ax, bar_data_Ne, bar_data_Ne_std, colors_Ne)
 
     # Add horizontal line for true Ne
     ax.axhline(y=1000, color='red', linestyle='--', linewidth=1.5, label='True Ne = 1000')
 
     # Format ticks, labels, legend
-    ax.set_xticks(x)
-    ax.set_xticklabels(bar_data_Ne.columns, rotation=45, ha='right')
     ax.set_ylabel("Effective Population Size")
     ax.legend(fontsize=16, loc='upper left')
     plt.tight_layout()
