@@ -79,7 +79,7 @@ Simulated VCF files were processed with PhasedIBD (Freyman et al., 2020) to get 
 📂[phasedibd_meta.csv](https://github.com/kitku15/MEOWSS/blob/master/METAS/phasedibd_meta.csv)<br/>
 
 ## 🏅 Acknowledgements
-To Dr Bhavin Khatri and Josh Reynolds for their supervision. I acknowledge Cheyanne Seah, Anushka Thawani and Theo Hemmant for earlier contributions to the Python code implemented in MEOWSS and experimental protocol, and the Imperial College Research Computing Service for computational support.
+To Dr Bhavin Khatri and Dr Josh Reynolds for their supervision. I acknowledge Cheyanne Seah, Anushka Thawani and Theo Hemmant for earlier contributions to the Python code implemented in MEOWSS and experimental protocol, and the Imperial College Research Computing Service for computational support.
 
 ## 🫂 To the next Student!
 
